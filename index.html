@@ -1,0 +1,1827 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#050310">
+<title>سایه‌ی شمشیر</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{width:100%;height:100%;overflow:hidden;background:#050310;
+  font-family:system-ui,-apple-system,'Segoe UI',Tahoma,sans-serif;
+  touch-action:none;user-select:none;-webkit-user-select:none;overscroll-behavior:none;position:fixed}
+canvas{display:block;position:absolute;inset:0;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(function(){
+'use strict';
+
+/* ═══════════════════════════════════════════
+   ابزار
+   ═══════════════════════════════════════════ */
+const clamp=(v,a,b)=>v<a?a:(v>b?b:v);
+const lerp=(a,b,t)=>a+(b-a)*t;
+const rand=(a,b)=>a+Math.random()*(b-a);
+const TAU=Math.PI*2;
+const easeOut=t=>1-(1-t)*(1-t);
+const easeIn=t=>t*t;
+const easeInOut=t=>t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+
+/* ═══════════════════════════════════════════
+   بوم
+   ═══════════════════════════════════════════ */
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d',{alpha:false});
+let W=0,H=0,DPR=1,VS=1,groundY=0;
+
+function resize(){
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  W=window.innerWidth; H=window.innerHeight;
+  cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  VS=clamp(Math.min(W/400,H/820),0.34,2.4);
+  groundY=H*0.80;
+  buildStars(); buildMountains(); buildAmbient();
+}
+window.addEventListener('resize',resize);
+window.addEventListener('orientationchange',()=>setTimeout(resize,260));
+
+/* ═══════════════════════════════════════════
+   صدا
+   ═══════════════════════════════════════════ */
+let actx=null;
+function initAudio(){
+  if(actx) return;
+  try{ actx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){}
+}
+function tone(f,d,ty,v,sl){
+  if(!actx) return;
+  const t=actx.currentTime;
+  const o=actx.createOscillator(),g=actx.createGain();
+  o.type=ty||'sine'; o.frequency.setValueAtTime(f,t);
+  if(sl) o.frequency.exponentialRampToValueAtTime(Math.max(28,sl),t+d);
+  g.gain.setValueAtTime(0.0001,t);
+  g.gain.exponentialRampToValueAtTime(v||0.05,t+0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+d);
+  o.connect(g); g.connect(actx.destination);
+  o.start(t); o.stop(t+d+0.02);
+}
+function noise(d,v,f){
+  if(!actx) return;
+  const n=Math.floor(actx.sampleRate*d);
+  const buf=actx.createBuffer(1,n,actx.sampleRate);
+  const data=buf.getChannelData(0);
+  for(let i=0;i<n;i++) data[i]=(Math.random()*2-1)*Math.pow(1-i/n,2);
+  const s=actx.createBufferSource(); s.buffer=buf;
+  const g=actx.createGain(); g.gain.value=v||0.05;
+  const fl=actx.createBiquadFilter(); fl.type='bandpass';
+  fl.frequency.value=f||1400; fl.Q.value=0.7;
+  s.connect(fl); fl.connect(g); g.connect(actx.destination); s.start();
+}
+const SFX={
+  slash:()=>{ noise(0.12,0.045,2400); tone(720,0.08,'sawtooth',0.018,240); },
+  hit:()=>{ noise(0.09,0.08,900); tone(150,0.12,'square',0.045,64); },
+  heavy:()=>{ noise(0.2,0.11,560); tone(95,0.22,'sawtooth',0.06,42); },
+  hurt:()=>{ tone(220,0.18,'square',0.05,74); noise(0.14,0.04,520); },
+  jump:()=>{ tone(430,0.1,'sine',0.035,780); },
+  die:()=>{ tone(340,0.32,'sawtooth',0.045,60); noise(0.28,0.05,400); },
+  wave:()=>{ tone(460,0.14,'sine',0.045,680); setTimeout(()=>tone(680,0.2,'sine',0.045,900),105); },
+  select:()=>{ tone(880,0.06,'sine',0.04,1200); },
+  click:()=>{ tone(660,0.05,'triangle',0.035,880); }
+};
+
+/* ═══════════════════════════════════════════
+   پس‌زمینه
+   ═══════════════════════════════════════════ */
+let stars=[],mtnA=[],mtnB=[],ambient=[];
+function buildStars(){
+  stars=[]; const n=Math.round(W*H/9000);
+  for(let i=0;i<n;i++)
+    stars.push({x:Math.random(),y:Math.random()*0.7,r:rand(0.4,1.8),p:Math.random()*TAU,s:rand(0.6,2.6)});
+}
+function buildMountains(){
+  mtnA=[]; mtnB=[];
+  let y=0.52;
+  for(let i=0;i<=48;i++){ y=clamp(y+rand(-0.16,0.16),0.22,0.92); mtnA.push(y); }
+  y=0.72;
+  for(let i=0;i<=48;i++){ y=clamp(y+rand(-0.2,0.2),0.42,1.0); mtnB.push(y); }
+}
+function buildAmbient(){
+  ambient=[];
+  for(let i=0;i<40;i++)
+    ambient.push({x:Math.random(),y:Math.random(),r:rand(0.5,2.2),s:rand(4,16),o:rand(0.15,0.5),p:Math.random()*TAU});
+}
+
+/* ═══════════════════════════════════════════
+   وضعیت بازی
+   ═══════════════════════════════════════════ */
+const game={
+  t:0, state:'menu', camX:0, shake:0, shakeX:0, shakeY:0,
+  hitStop:0, score:0, wave:0, combo:0, comboT:0, best:0,
+  particles:[], texts:[], slashes:[], enemies:[], spawnQ:[],
+  waveTimer:0, waveState:'idle', flash:0, deathT:0,
+  menuT:0, weapon:0, transition:0
+};
+
+/* ═══════════════════════════════════════════
+   سلاح‌ها
+   ═══════════════════════════════════════════ */
+const WEAPONS=[
+  {id:'katana', name:'کاتانا', desc:'سرعت و چابکی',
+   color:'#8ef0ff', color2:'#4fd8ff', glow:'#3fd0ff',
+   bladeLen:86, bladeW:4.2, dmg:16, heavyDmg:26, kb:250, speed:1.0,
+   tip:'#ffffff', hilt:'#2a1c3a', guard:'#4fd8ff'},
+  {id:'great', name:'شمشیر بزرگ', desc:'قدرت ویرانگر',
+   color:'#ffb347', color2:'#ff8a3d', glow:'#ffa83d',
+   bladeLen:110, bladeW:7.5, dmg:26, heavyDmg:44, kb:420, speed:0.78,
+   tip:'#fff2c2', hilt:'#3d1f0a', guard:'#ffb347'},
+  {id:'dual', name:'دو تیغه', desc:'برنده و سریع',
+   color:'#ff7ad9', color2:'#c94fff', glow:'#e858ff',
+   bladeLen:68, bladeW:3.6, dmg:12, heavyDmg:22, kb:200, speed:1.25,
+   tip:'#ffe0ff', hilt:'#2a0f28', guard:'#e858ff'},
+  {id:'void', name:'شمشیر خلا', desc:'قدرت ماوراء',
+   color:'#b28dff', color2:'#7b5cff', glow:'#a37bff',
+   bladeLen:96, bladeW:5.5, dmg:22, heavyDmg:36, kb:340, speed:0.9,
+   tip:'#f0e0ff', hilt:'#150a2a', guard:'#a37bff'}
+];
+
+/* ═══════════════════════════════════════════
+   IK - معکوس سینماتیک برای بازوها و پاها
+   ═══════════════════════════════════════════ */
+function ik(sx,sy,tx,ty,l1,l2,bend){
+  let dx=tx-sx,dy=ty-sy,d=Math.hypot(dx,dy);
+  const maxD=l1+l2-0.01,minD=Math.abs(l1-l2)+0.01;
+  if(d>maxD){ dx*=maxD/d; dy*=maxD/d; d=maxD; tx=sx+dx; ty=sy+dy; }
+  else if(d<minD){ if(d<1e-4){dx=1;dy=0;d=1;} dx*=minD/d; dy*=minD/d; d=minD; tx=sx+dx; ty=sy+dy; }
+  const base=Math.atan2(dy,dx);
+  const cosA=(d*d+l1*l1-l2*l2)/(2*d*l1);
+  const A=Math.acos(clamp(cosA,-1,1));
+  const ang=base+A*bend;
+  return {x:sx+Math.cos(ang)*l1, y:sy+Math.sin(ang)*l1, tx, ty};
+}
+
+/* ═══════════════════════════════════════════
+   پوز شخصیت
+   ═══════════════════════════════════════════ */
+function newPose(){
+  return {
+    hipX:0, hipY:-85,
+    chestX:0, chestY:-133,
+    headX:3, headY:-172,
+    // شانه جلو
+    shFx:7, shFy:-130,
+    // شانه عقب
+    shBx:-7, shBy:-128,
+    // دست جلو (هدف آرنج/ساعد)
+    hFx:32, hFy:-96,
+    // دست عقب
+    hBx:-24, hBy:-98,
+    // پا جلو
+    fFx:12, fFy:0,
+    // پا عقب
+    fBx:-12, fBy:0,
+    // چرخش شمشیر نسبت به ساعد
+    swRel:0.15,
+    bob:0, lean:0
+  };
+}
+function lerpPose(cur,tgt,k){
+  for(const key in tgt) cur[key]=lerp(cur[key],tgt[key],k);
+}
+
+function poseFor(e){
+  const t=e.animT, p=newPose(), st=e.state;
+  const baseBob=Math.sin(t*2.6)*2.2;
+
+  if(st==='run'){
+    const s=Math.sin(t*14), c=Math.cos(t*14);
+    p.fFx=10+s*26; p.fFy=-Math.max(0,c)*14;
+    p.fBx=-10-s*26; p.fBy=-Math.max(0,-c)*14;
+    p.bob=Math.abs(s)*5-2.5;
+    p.lean=6;
+    p.hipX=2; p.chestX=4; p.headX=6;
+    p.shFx=9; p.shFy=-128;
+    p.shBx=-6; p.shBy=-126;
+    p.hFx=30-s*10; p.hFy=-94; p.hBx=-24+s*12; p.hBy=-96;
+    p.swRel=0.1+s*0.2;
+  } else if(st==='jump'||st==='fall'){
+    p.fFx=8; p.fFy=-26; p.fBx=-8; p.fBy=-10;
+    p.bob=2; p.lean=4;
+    p.hipX=1; p.chestX=3; p.headX=4;
+    p.shFx=8; p.shFy=-130; p.shBx=-6; p.shBy=-128;
+    p.hFx=26; p.hFy=-108; p.hBx=-20; p.hBy=-110;
+    p.swRel=-0.35;
+  } else if(st==='hurt'){
+    p.lean=-10; p.bob=3;
+    p.hipX=-3; p.chestX=-6; p.headX=-4;
+    p.shFx=2; p.shFy=-132; p.shBx=-14; p.shBy=-126;
+    p.hFx=14; p.hFy=-90; p.hBx=-30; p.hBy=-92;
+    p.swRel=0.6;
+    p.fFx=6; p.fBx=-20;
+  } else {
+    p.bob=baseBob;
+    p.headY=-172+baseBob*0.4;
+    p.chestY=-133+baseBob*0.3;
+    p.shFy=-130+baseBob*0.3; p.shBy=-128+baseBob*0.3;
+    p.hFy=-96+baseBob*0.3; p.hBy=-98+baseBob*0.3;
+    p.swRel=0.15+Math.sin(t*2.6)*0.08;
+  }
+
+  // انیمیشن حمله
+  if(e.atk){
+    const k=e.atk.p, type=e.atk.type;
+    let hx,hy,sw;
+    if(type==='up'){
+      if(k<0.32){ const u=easeOut(k/0.32); hx=lerp(32,6,u); hy=lerp(-96,-62,u); sw=lerp(0.15,1.3,u); }
+      else if(k<0.52){ const u=easeIn((k-0.32)/0.20); hx=lerp(6,28,u); hy=lerp(-62,-176,u); sw=lerp(1.3,-0.9,u); }
+      else { const u=(k-0.52)/0.48; hx=lerp(28,32,u); hy=lerp(-176,-96,u); sw=lerp(-0.9,0.15,u); }
+    } else if(type==='down'){
+      if(k<0.34){ const u=easeOut(k/0.34); hx=lerp(32,-6,u); hy=lerp(-96,-186,u); sw=lerp(0.15,-1.4,u); }
+      else if(k<0.54){ const u=easeIn((k-0.34)/0.20); hx=lerp(-6,52,u); hy=lerp(-186,-32,u); sw=lerp(-1.4,2.0,u); }
+      else { const u=(k-0.54)/0.46; hx=lerp(52,32,u); hy=lerp(-32,-96,u); sw=lerp(2.0,0.15,u); }
+    } else {
+      if(k<0.32){ const u=easeOut(k/0.32); hx=lerp(32,-4,u); hy=lerp(-96,-142,u); sw=lerp(0.15,-1.6,u); }
+      else if(k<0.52){ const u=easeIn((k-0.32)/0.20); hx=lerp(-4,66,u); hy=lerp(-142,-84,u); sw=lerp(-1.6,1.6,u); }
+      else { const u=(k-0.52)/0.48; hx=lerp(66,32,u); hy=lerp(-84,-96,u); sw=lerp(1.6,0.15,u); }
+    }
+    p.hFx=hx; p.hFy=hy; p.swRel=sw;
+    p.lean=8;
+    p.chestX=5; p.hipX=2; p.headX=7;
+    p.shFx=10; p.shFy=-128;
+  }
+  return p;
+}
+
+/* ═══════════════════════════════════════════
+   بازیکن
+   ═══════════════════════════════════════════ */
+const player={
+  x:0,y:0,vx:0,vy:0,onGround:true,facing:1,
+  hp:100,maxHp:100,state:'idle',animT:0,
+  atk:null,iframe:0,hitFlash:0,hurtT:0,
+  pose:newPose(),alive:true,scale:1
+};
+function resetPlayer(){
+  Object.assign(player,{
+    x:0,y:0,vx:0,vy:0,onGround:true,facing:1,
+    hp:player.maxHp,state:'idle',animT:0,
+    atk:null,iframe:0,hitFlash:0,hurtT:0,
+    pose:newPose(),alive:true,scale:1
+  });
+}
+function weapon(){ return WEAPONS[game.weapon]; }
+
+/* ═══════════════════════════════════════════
+   دشمن
+   ═══════════════════════════════════════════ */
+const ENEMY_CFG={
+  grunt :{hp:44, speed:130, dmg:9,  reach:96,  scale:1.00, color:'#ff4d6d', dark:'#3a0814', limb:'#5a0e20', aggro:0.55},
+  ninja :{hp:28, speed:235, dmg:7,  reach:86,  scale:0.90, color:'#4de1ff', dark:'#062630', limb:'#0b3a4d', aggro:0.34},
+  brute :{hp:110,speed:84,  dmg:18, reach:122, scale:1.32, color:'#ffa83d', dark:'#3a2008', limb:'#5a3208', aggro:0.75},
+  wraith:{hp:60, speed:170, dmg:13, reach:110, scale:1.05, color:'#b28dff', dark:'#1a0a30', limb:'#2c1550', aggro:0.5}
+};
+
+function spawnEnemy(type,x){
+  const cfg=ENEMY_CFG[type];
+  const sc=1+game.wave*0.10;
+  const e={
+    kind:'enemy',type,cfg,
+    x,y:0,vx:0,vy:0,onGround:true,facing:x>player.x?-1:1,
+    hp:Math.round(cfg.hp*sc), maxHp:Math.round(cfg.hp*sc),
+    state:'chase',animT:Math.random()*4,stateT:0,
+    atk:null,iframe:0,hitFlash:0,dead:false,deathT:0,
+    pose:newPose(), scale:cfg.scale, sepX:0, hitDir:0
+  };
+  game.enemies.push(e);
+  for(let i=0;i<16;i++){
+    game.particles.push({
+      x:e.x+rand(-22,22),y:rand(-150,-10),vx:rand(-70,70),vy:rand(-140,-20),
+      life:rand(0.3,0.8),max:0.8,r:rand(1.5,3.8),c:cfg.color,g:130,add:true
+    });
+  }
+  return e;
+}
+
+/* ═══════════════════════════════════════════
+   افکت‌ها
+   ═══════════════════════════════════════════ */
+function addSlash(x,y,facing,ang,color,size,wide){
+  game.slashes.push({x,y,facing,ang,color,size:size||84,wide:wide||0.95,life:0.28,max:0.28});
+}
+function burst(x,y,n,color,power,gravity){
+  for(let i=0;i<n;i++){
+    const a=rand(0,TAU), sp=rand(40,power||300);
+    game.particles.push({
+      x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-rand(0,120),
+      life:rand(0.25,0.8),max:0.8,r:rand(1.2,3.8),c:color,g:gravity===undefined?700:gravity,add:false
+    });
+  }
+}
+function sparks(x,y,n,color){
+  for(let i=0;i<n;i++){
+    const a=rand(0,TAU), sp=rand(90,480);
+    game.particles.push({
+      x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,
+      life:rand(0.12,0.36),max:0.36,r:rand(1,2.8),c:color,g:280,add:true
+    });
+  }
+}
+function popText(x,y,txt,color,size){
+  game.texts.push({x,y,txt,color,size:size||18,life:0.95,max:0.95,vy:-74});
+}
+function shake(a){ game.shake=Math.min(game.shake+a,28); }
+function hitStop(t){ game.hitStop=Math.max(game.hitStop,t); }
+
+/* ═══════════════════════════════════════════
+   کنترل
+   ═══════════════════════════════════════════ */
+const input={
+  stickId:null, ox:0, oy:0, dx:0, dy:0, active:false,
+  atkIds:{}, jumpLock:false, keys:{}
+};
+function screenToWorldX(sx){ return game.camX+(sx-W/2)/VS; }
+function worldToScreenX(wx){ return (wx-game.camX)*VS+W/2; }
+function worldToScreenY(wy){ return groundY+wy*VS; }
+
+function onDown(id,x,y){
+  initAudio();
+  if(game.state==='menu'){ handleMenuTouch(x,y); return; }
+  if(game.state==='over'){ if(game.deathT>1.0) restart(); return; }
+  if(game.state!=='play') return;
+  if(x<W*0.46){
+    if(input.stickId===null){
+      input.stickId=id; input.ox=x; input.oy=y; input.dx=0; input.dy=0;
+      input.active=true; input.jumpLock=false;
+    }
+  } else {
+    if(input.atkIds[id]) return;
+    input.atkIds[id]=true;
+    const py=worldToScreenY(-110);
+    let type='slash';
+    if(y<py-56) type='up';
+    else if(y>py+50) type='down';
+    playerAttack(type);
+  }
+}
+function onMove(id,x,y){
+  if(id===input.stickId){
+    input.dx=x-input.ox; input.dy=y-input.oy;
+    if(input.dy<-36 && !input.jumpLock){
+      input.jumpLock=true;
+      if(player.onGround && player.state!=='hurt') jump();
+    }
+  }
+}
+function onUp(id){
+  if(id===input.stickId){ input.stickId=null; input.active=false; input.dx=0; input.dy=0; }
+  delete input.atkIds[id];
+}
+
+cv.addEventListener('touchstart',e=>{ e.preventDefault(); for(const t of e.changedTouches) onDown(t.identifier,t.clientX,t.clientY); },{passive:false});
+cv.addEventListener('touchmove',e=>{ e.preventDefault(); for(const t of e.changedTouches) onMove(t.identifier,t.clientX,t.clientY); },{passive:false});
+cv.addEventListener('touchend',e=>{ e.preventDefault(); for(const t of e.changedTouches) onUp(t.identifier); },{passive:false});
+cv.addEventListener('touchcancel',e=>{ for(const t of e.changedTouches) onUp(t.identifier); },{passive:false});
+
+let mouseDown=false, mouseX=0, mouseY=0;
+cv.addEventListener('mousedown',e=>{ mouseDown=true; mouseX=e.clientX; mouseY=e.clientY; onDown('m',e.clientX,e.clientY); });
+cv.addEventListener('mousemove',e=>{
+  mouseX=e.clientX; mouseY=e.clientY;
+  if(mouseDown) onMove('m',e.clientX,e.clientY);
+});
+window.addEventListener('mouseup',()=>{ if(mouseDown){ mouseDown=false; onUp('m'); } });
+
+window.addEventListener('keydown',e=>{
+  input.keys[e.key.toLowerCase()]=true;
+  if(game.state==='menu'){
+    if(e.key==='Enter'||e.key===' ') startGame();
+    if(e.key==='ArrowRight'||e.key==='d'){ game.weapon=(game.weapon+1)%WEAPONS.length; SFX.select(); }
+    if(e.key==='ArrowLeft'||e.key==='a'){ game.weapon=(game.weapon-1+WEAPONS.length)%WEAPONS.length; SFX.select(); }
+    return;
+  }
+  if(game.state==='over'&&game.deathT>1.0&&(e.key==='Enter'||e.key===' ')){ restart(); return; }
+  if(e.key===' '||e.key==='w'||e.key==='W'){ if(player.onGround&&player.state!=='hurt') jump(); }
+  if(e.key==='j'||e.key==='J') playerAttack('slash');
+  if(e.key==='k'||e.key==='K') playerAttack('up');
+  if(e.key==='l'||e.key==='L') playerAttack('down');
+});
+window.addEventListener('keyup',e=>{ input.keys[e.key.toLowerCase()]=false; });
+
+/* ═══════════════════════════════════════════
+   اکشن‌ها
+   ═══════════════════════════════════════════ */
+function jump(){
+  player.vy=-890;
+  player.onGround=false;
+  player.state='jump';
+  SFX.jump();
+  for(let i=0;i<10;i++){
+    game.particles.push({
+      x:player.x+rand(-16,16),y:rand(-8,2),vx:rand(-80,80),vy:rand(-70,-10),
+      life:rand(0.2,0.5),max:0.5,r:rand(1.5,3.2),c:'#9d7bff',g:420,add:true
+    });
+  }
+}
+
+function playerAttack(type){
+  if(!player.alive||game.state!=='play') return;
+  if(player.atk||player.hurtT>0) return;
+  const w=weapon();
+  const heavy=(type==='down');
+  const dur=(heavy?0.5:0.4)/w.speed;
+  player.atk={
+    p:0,dur,type,hitSet:[],struck:false,
+    dmg:heavy?w.heavyDmg:w.dmg,
+    kb:w.kb, range:heavy?122:110,
+  };
+  player.state='attack';
+  player.animT=0;
+  if(player.onGround) player.vx*=0.3;
+  // چرخش به سمت نزدیک‌ترین دشمن
+  let near=null,nd=1e9;
+  for(const e of game.enemies){
+    if(e.dead) continue;
+    const d=Math.abs(e.x-player.x);
+    if(d<nd&&d<420){ nd=d; near=e; }
+  }
+  if(near) player.facing=near.x>player.x?1:-1;
+  if(heavy) SFX.heavy(); else SFX.slash();
+}
+
+/* ═══════════════════════════════════════════
+   موج‌ها
+   ═══════════════════════════════════════════ */
+function startWave(n){
+  game.wave=n; game.spawnQ=[];
+  const count=Math.min(2+Math.floor(n*1.5),12);
+  for(let i=0;i<count;i++){
+    let type='grunt';
+    const r=Math.random();
+    if(n>=2&&r<0.32) type='ninja';
+    else if(n>=3&&r>0.80) type='brute';
+    else if(n>=4&&r>0.62&&r<0.78) type='wraith';
+    game.spawnQ.push(type);
+  }
+  game.waveState='spawning';
+  game.waveTimer=0.5;
+  SFX.wave();
+  popText(player.x,-240,'موج '+n,'#ffd166',28);
+}
+function startGame(){
+  initAudio();
+  game.state='play';
+  Object.assign(game,{
+    score:0,combo:0,comboT:0,
+    enemies:[],particles:[],texts:[],slashes:[],
+    camX:0,shake:0,flash:0,deathT:0
+  });
+  resetPlayer();
+  game.wave=0;
+  startWave(1);
+}
+function restart(){ startGame(); }
+
+/* ═══════════════════════════════════════════
+   منو - برخورد لمسی
+   ═══════════════════════════════════════════ */
+function handleMenuTouch(x,y){
+  const btnY=H*0.66, btnW=Math.min(W*0.6,260), btnH=Math.min(W,H)*0.11;
+  // دکمه شروع
+  if(y>btnY-btnH/2 && y<btnY+btnH/2 && x>W/2-btnW/2 && x<W/2+btnW/2){
+    SFX.click(); startGame(); return;
+  }
+  // انتخاب سلاح (فلش چپ)
+  const arrowY=H*0.44, arrowR=Math.min(W,H)*0.055;
+  if(Math.abs(y-arrowY)<arrowR*1.2){
+    const leftX=W*0.15, rightX=W*0.85;
+    if(Math.abs(x-leftX)<arrowR*1.3){ game.weapon=(game.weapon-1+WEAPONS.length)%WEAPONS.length; SFX.select(); }
+    else if(Math.abs(x-rightX)<arrowR*1.3){ game.weapon=(game.weapon+1)%WEAPONS.length; SFX.select(); }
+  }
+}
+
+/* ═══════════════════════════════════════════
+   آپدیت
+   ═══════════════════════════════════════════ */
+function update(dt){
+  game.t+=dt;
+  if(game.state==='menu') game.menuT+=dt;
+
+  if(game.hitStop>0){ game.hitStop-=dt; dt*=0.12; }
+
+  game.shake*=Math.pow(0.0015,dt);
+  if(game.shake<0.15) game.shake=0;
+  game.shakeX=rand(-1,1)*game.shake;
+  game.shakeY=rand(-1,1)*game.shake;
+  game.flash=Math.max(0,game.flash-dt*4);
+
+  if(game.state==='over'){
+    game.deathT+=dt;
+    updateParticles(dt); updateTexts(dt); updateSlashes(dt); updateCamera(dt);
+    return;
+  }
+  if(game.state!=='play'){
+    updateParticles(dt); updateTexts(dt); updateSlashes(dt);
+    return;
+  }
+
+  updatePlayer(dt);
+  updateEnemies(dt);
+  updateWaves(dt);
+  updateParticles(dt);
+  updateTexts(dt);
+  updateSlashes(dt);
+  updateCamera(dt);
+
+  if(game.comboT>0){ game.comboT-=dt; if(game.comboT<=0) game.combo=0; }
+}
+
+function updateCamera(dt){
+  const target=player.x+player.facing*40;
+  game.camX=lerp(game.camX,target,1-Math.pow(0.001,dt));
+}
+
+function updatePlayer(dt){
+  const p=player;
+  p.animT+=dt;
+  p.iframe=Math.max(0,p.iframe-dt);
+  p.hitFlash=Math.max(0,p.hitFlash-dt*4);
+  p.hurtT=Math.max(0,p.hurtT-dt);
+
+  let mv=0;
+  if(input.active) mv=clamp(input.dx/55,-1,1);
+  if(input.keys['a']||input.keys['arrowleft']) mv=-1;
+  if(input.keys['d']||input.keys['arrowright']) mv=1;
+
+  if(!p.atk&&p.hurtT<=0){
+    if(Math.abs(mv)>0.12){
+      p.vx=lerp(p.vx,mv*340,1-Math.pow(0.0001,dt));
+      p.facing=mv>0?1:-1;
+      if(p.onGround) p.state='run';
+    } else {
+      p.vx*=Math.pow(0.0006,dt);
+      if(p.onGround&&p.state!=='attack') p.state='idle';
+    }
+  } else p.vx*=Math.pow(0.02,dt);
+
+  p.vy+=2350*dt;
+  p.x+=p.vx*dt;
+  p.y+=p.vy*dt;
+  if(p.y>=0){
+    if(!p.onGround&&p.vy>320){
+      for(let i=0;i<8;i++) game.particles.push({
+        x:p.x+rand(-16,16),y:rand(-6,2),vx:rand(-120,120),vy:rand(-100,-10),
+        life:rand(0.2,0.45),max:0.45,r:rand(1.2,3),c:'#7b5cff',g:520,add:true
+      });
+    }
+    p.y=0; p.vy=0;
+    if(!p.onGround){ p.onGround=true; if(p.state==='jump'||p.state==='fall') p.state='idle'; }
+  } else {
+    p.onGround=false;
+    if(p.state!=='attack'&&p.state!=='hurt') p.state=p.vy<0?'jump':'fall';
+  }
+
+  const tgt=poseFor(p);
+  lerpPose(p.pose,tgt,1-Math.pow(0.0000008,dt));
+
+  if(p.atk){
+    const a=p.atk;
+    const prev=a.p;
+    a.p+=dt/a.dur;
+    const start=0.30, end=0.58;
+
+    if(prev<start&&a.p>=start){
+      const w=weapon();
+      const ang=a.type==='up'?-1.3:(a.type==='down'?0.9:0.0);
+      const off=a.type==='down'?-105:(a.type==='up'?-85:-100);
+      addSlash(p.x+p.facing*45,off,p.facing,ang,w.color,a.type==='down'?115:100,a.type==='down'?1.15:0.95);
+      if(a.type==='down') shake(10); else shake(4);
+    }
+
+    if(a.p>=start&&a.p<=end){
+      for(const e of game.enemies){
+        if(e.dead||a.hitSet.includes(e)) continue;
+        const dx=e.x-p.x, dy=e.y-p.y;
+        const dirOk=(dx*p.facing)>-30;
+        const dist=Math.abs(dx);
+        if(dirOk&&dist<a.range&&Math.abs(dy)<125){
+          a.hitSet.push(e);
+          damageEnemy(e,a.dmg,a.kb,p.facing,a.type);
+        }
+      }
+    }
+    if(a.p>=1){ p.atk=null; if(p.state==='attack') p.state='idle'; }
+  }
+
+  if(p.hp<=0&&p.alive){
+    p.alive=false;
+    game.state='over'; game.deathT=0;
+    shake(24); hitStop(0.35);
+    burst(p.x,-90,55,'#ff4d6d',540,620);
+    burst(p.x,-90,26,'#8ef0ff',440,420);
+    SFX.die();
+    game.best=Math.max(game.best,game.score);
+  }
+}
+
+function damageEnemy(e,dmg,kb,dir,type){
+  if(e.dead) return;
+  e.hp-=dmg;
+  e.hitFlash=1;
+  e.iframe=0.1;
+  e.vx=dir*kb*(e.type==='brute'?0.45:1);
+  if(type==='up'&&e.type!=='brute'){ e.vy=-440; e.onGround=false; }
+
+  const hx=e.x-dir*14, hy=-105;
+  sparks(hx,hy,14,'#fff6c2');
+  burst(hx,hy,10,e.cfg.color,300,700);
+  addSlash(hx,hy,-dir,rand(-0.4,0.4),'#ffffff',46,0.55);
+  shake(type==='down'?12:7);
+  hitStop(0.055);
+
+  game.combo++;
+  game.comboT=1.6;
+  const pts=Math.round(dmg*(1+game.combo*0.08));
+  game.score+=pts;
+  popText(e.x,-150-(e.scale*20),'+'+pts,'#ffe066',16+Math.min(game.combo,8));
+  if(game.combo>2&&game.combo%5===0) popText(player.x,-190,game.combo+'x کمبو!','#ff7ad9',22);
+
+  if(e.hp<=0){
+    e.dead=true; e.deathT=0;
+    game.score+=40*Math.ceil(game.wave/2);
+    burst(e.x,-100,36,e.cfg.color,500,780);
+    burst(e.x,-100,18,'#ffffff',380,600);
+    popText(e.x,-170,'حذف!','#ff4d6d',20);
+    shake(10); hitStop(0.08);
+    SFX.hit();
+  } else {
+    SFX.hit();
+    if(e.state!=='strike'){ e.state='hurt'; e.stateT=0.28; }
+  }
+}
+
+function updateEnemies(dt){
+  const arr=game.enemies;
+  for(let i=arr.length-1;i>=0;i--){
+    const e=arr[i];
+    if(e.dead){
+      e.deathT+=dt;
+      if(e.deathT>0.9) arr.splice(i,1);
+      continue;
+    }
+    e.animT+=dt;
+    e.iframe=Math.max(0,e.iframe-dt);
+    e.hitFlash=Math.max(0,e.hitFlash-dt*4);
+
+    const dx=player.x-e.x;
+    const dist=Math.abs(dx);
+    const dir=dx>=0?1:-1;
+
+    let sep=0;
+    for(const o of arr){
+      if(o===e||o.dead) continue;
+      const d=o.x-e.x;
+      if(Math.abs(d)<54) sep-=Math.sign(d||1)*(54-Math.abs(d))*3;
+    }
+    e.sepX=lerp(e.sepX,sep,1-Math.pow(0.001,dt));
+
+    if(e.state==='hurt'){
+      e.stateT-=dt;
+      e.vx*=Math.pow(0.02,dt);
+      if(e.stateT<=0) e.state='chase';
+    } else if(e.state==='windup'){
+      e.stateT-=dt;
+      e.vx*=Math.pow(0.01,dt);
+      e.facing=dir;
+      if(e.stateT<=0){
+        e.state='strike'; e.stateT=0.16;
+        e.atk={p:0,dur:0.36,type:'slash'};
+        const sx=e.x+e.facing*55, sy=-96;
+        addSlash(sx,sy,e.facing,0,e.cfg.color,76,0.9);
+        if(player.alive&&Math.abs(player.x-e.x)<e.cfg.reach&&Math.abs(player.y-e.y)<110){
+          hurtPlayer(e.cfg.dmg*(1+game.wave*0.06),dir);
+        }
+        noise(0.08,0.05,1800);
+      }
+    } else if(e.state==='strike'){
+      e.stateT-=dt;
+      e.vx*=Math.pow(0.02,dt);
+      if(e.stateT<=0){ e.state='recover'; e.stateT=0.42+rand(0,0.2); }
+    } else if(e.state==='recover'){
+      e.stateT-=dt;
+      e.vx*=Math.pow(0.05,dt);
+      if(e.stateT<=0) e.state='chase';
+    } else {
+      e.facing=dir;
+      const ideal=e.cfg.reach*0.72;
+      if(dist>ideal){
+        e.vx=lerp(e.vx,dir*e.cfg.speed,1-Math.pow(0.002,dt));
+        e.state='run';
+      } else {
+        e.vx*=Math.pow(0.004,dt);
+        e.state='idle';
+        if(Math.random()<dt*e.cfg.aggro*10){ e.state='windup'; e.stateT=0.42; }
+      }
+    }
+
+    e.vx+=e.sepX*dt*8;
+    e.vy+=2350*dt;
+    e.x+=e.vx*dt;
+    e.y+=e.vy*dt;
+    if(e.y>=0){ e.y=0; e.vy=0; e.onGround=true; } else e.onGround=false;
+
+    if(e.x-player.x>1500||player.x-e.x>1500) e.x=player.x+(e.x>player.x?900:-900);
+
+    if(e.atk){ e.atk.p+=dt/e.atk.dur; if(e.atk.p>=1) e.atk=null; }
+    const tgt=poseFor(e);
+    lerpPose(e.pose,tgt,1-Math.pow(0.0000008,dt));
+  }
+}
+
+function hurtPlayer(dmg,dir){
+  const p=player;
+  if(p.iframe>0||!p.alive) return;
+  p.hp-=dmg;
+  p.iframe=0.75; p.hitFlash=1; p.hurtT=0.34;
+  p.state='hurt';
+  p.vx=dir*290; p.vy=-200; p.onGround=false; p.atk=null;
+  burst(p.x,-100,22,'#ff4d6d',420,720);
+  sparks(p.x-dir*20,-110,10,'#ff9aa8');
+  shake(14); hitStop(0.06); game.flash=0.5;
+  game.combo=0; SFX.hurt();
+  popText(p.x,-180,'-'+Math.round(dmg),'#ff4d6d',20);
+}
+
+function updateWaves(dt){
+  if(game.waveState==='spawning'){
+    game.waveTimer-=dt;
+    if(game.waveTimer<=0&&game.spawnQ.length>0){
+      const type=game.spawnQ.shift();
+      const side=Math.random()<0.5?-1:1;
+      const x=player.x+side*(W/VS*0.55+rand(60,220));
+      spawnEnemy(type,x);
+      game.waveTimer=rand(0.22,0.65);
+    }
+    if(game.spawnQ.length===0) game.waveState='fighting';
+  } else if(game.waveState==='fighting'){
+    let alive=0;
+    for(const e of game.enemies) if(!e.dead) alive++;
+    if(alive===0){ game.waveState='idle'; game.waveTimer=1.4; }
+  } else {
+    game.waveTimer-=dt;
+    if(game.waveTimer<=0) startWave(game.wave+1);
+  }
+}
+
+function updateParticles(dt){
+  const arr=game.particles;
+  for(let i=arr.length-1;i>=0;i--){
+    const p=arr[i];
+    p.life-=dt;
+    if(p.life<=0){ arr.splice(i,1); continue; }
+    p.vy+=p.g*dt;
+    p.x+=p.vx*dt; p.y+=p.vy*dt;
+    p.vx*=Math.pow(0.25,dt);
+    if(p.y>0&&!p.add){ p.y=0; p.vy*=-0.32; p.vx*=0.6; if(Math.abs(p.vy)<18) p.vy=0; }
+  }
+  if(arr.length>620) arr.splice(0,arr.length-620);
+}
+function updateTexts(dt){
+  const arr=game.texts;
+  for(let i=arr.length-1;i>=0;i--){
+    const t=arr[i];
+    t.life-=dt;
+    if(t.life<=0){ arr.splice(i,1); continue; }
+    t.y+=t.vy*dt; t.vy*=Math.pow(0.12,dt);
+  }
+}
+function updateSlashes(dt){
+  const arr=game.slashes;
+  for(let i=arr.length-1;i>=0;i--){
+    arr[i].life-=dt;
+    if(arr[i].life<=0) arr.splice(i,1);
+  }
+}
+
+/* ═══════════════════════════════════════════
+   رسم پس‌زمینه
+   ═══════════════════════════════════════════ */
+function drawBackground(){
+  const g=ctx.createLinearGradient(0,0,0,groundY);
+  g.addColorStop(0,'#05030e');
+  g.addColorStop(0.4,'#130822');
+  g.addColorStop(0.75,'#281240');
+  g.addColorStop(1,'#3a1550');
+  ctx.fillStyle=g;
+  ctx.fillRect(0,0,W,groundY+2);
+
+  // ستاره‌ها
+  const t=game.t;
+  for(const s of stars){
+    const a=0.3+0.7*(0.5+0.5*Math.sin(t*s.s+s.p));
+    ctx.globalAlpha=a*0.9;
+    ctx.fillStyle='#dcd0ff';
+    ctx.beginPath(); ctx.arc(s.x*W,s.y*groundY,s.r,0,TAU); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  // سحابی
+  const neb=ctx.createRadialGradient(W*0.25,groundY*0.3,0,W*0.25,groundY*0.3,W*0.5);
+  neb.addColorStop(0,'rgba(120,60,220,0.16)');
+  neb.addColorStop(1,'rgba(120,60,220,0)');
+  ctx.fillStyle=neb; ctx.fillRect(0,0,W,groundY);
+
+  // ذرات معلق
+  for(const a of ambient){
+    const x=a.x*W+Math.sin(t*a.s*0.3+a.p)*30;
+    const y=a.y*groundY+Math.cos(t*a.s*0.25+a.p)*20;
+    ctx.globalAlpha=a.o*(0.5+0.5*Math.sin(t*2+a.p));
+    ctx.fillStyle='#a88fff';
+    ctx.beginPath(); ctx.arc(x,y,a.r,0,TAU); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  // ماه
+  const mx=W*0.78,my=groundY*0.24,mr=Math.min(W,H)*0.08;
+  const mg=ctx.createRadialGradient(mx,my,mr*0.3,mx,my,mr*8);
+  mg.addColorStop(0,'rgba(190,150,255,0.28)');
+  mg.addColorStop(0.35,'rgba(140,100,255,0.09)');
+  mg.addColorStop(1,'rgba(140,100,255,0)');
+  ctx.fillStyle=mg; ctx.beginPath(); ctx.arc(mx,my,mr*8,0,TAU); ctx.fill();
+
+  ctx.save();
+  ctx.shadowColor='rgba(200,170,255,0.9)';
+  ctx.shadowBlur=50;
+  const moonG=ctx.createRadialGradient(mx-mr*0.3,my-mr*0.3,mr*0.1,mx,my,mr);
+  moonG.addColorStop(0,'#fff8ff');
+  moonG.addColorStop(0.6,'#e2d0ff');
+  moonG.addColorStop(1,'#b79dff');
+  ctx.fillStyle=moonG;
+  ctx.beginPath(); ctx.arc(mx,my,mr,0,TAU); ctx.fill();
+  // دهانه‌ها
+  ctx.globalAlpha=0.15;
+  ctx.fillStyle='#8a6fd0';
+  ctx.beginPath(); ctx.arc(mx-mr*0.3,my-mr*0.2,mr*0.15,0,TAU); ctx.fill();
+  ctx.beginPath(); ctx.arc(mx+mr*0.25,my+mr*0.15,mr*0.11,0,TAU); ctx.fill();
+  ctx.beginPath(); ctx.arc(mx-mr*0.1,my+mr*0.35,mr*0.08,0,TAU); ctx.fill();
+  ctx.restore();
+
+  drawMountains(mtnA,0.06,'#1d1030',groundY+2,groundY*0.62);
+  drawMountains(mtnB,0.13,'#150a24',groundY+2,groundY*0.45);
+
+  const fog=ctx.createLinearGradient(0,groundY-groundY*0.3,0,groundY+2);
+  fog.addColorStop(0,'rgba(120,70,200,0)');
+  fog.addColorStop(1,'rgba(150,90,255,0.22)');
+  ctx.fillStyle=fog;
+  ctx.fillRect(0,groundY-groundY*0.3,W,groundY*0.3);
+}
+function drawMountains(arr,par,color,baseY,amp){
+  const off=(game.camX*VS*par)%160;
+  const step=160,n=Math.ceil(W/step)+3,start=Math.floor(-off/step)-1;
+  ctx.fillStyle=color;
+  ctx.beginPath();
+  ctx.moveTo(-200,baseY+10);
+  for(let i=start;i<start+n;i++){
+    const idx=((i%48)+48)%48;
+    const x=i*step-off;
+    ctx.lineTo(x,baseY-arr[idx]*amp);
+    ctx.lineTo(x+step*0.5,baseY-arr[(idx+1)%48]*amp);
+  }
+  ctx.lineTo(W+300,baseY+10);
+  ctx.closePath(); ctx.fill();
+}
+
+function drawGround(){
+  const gy=groundY;
+  const g=ctx.createLinearGradient(0,gy,0,H);
+  g.addColorStop(0,'#22143a');
+  g.addColorStop(0.10,'#150c26');
+  g.addColorStop(1,'#05020a');
+  ctx.fillStyle=g;
+  ctx.fillRect(0,gy,W,H-gy+1);
+
+  const lg=ctx.createLinearGradient(0,gy-3,0,gy+5);
+  lg.addColorStop(0,'rgba(160,110,255,0)');
+  lg.addColorStop(0.5,'rgba(180,140,255,0.7)');
+  lg.addColorStop(1,'rgba(160,110,255,0)');
+  ctx.fillStyle=lg;
+  ctx.fillRect(0,gy-3,W,8);
+
+  const spacing=110*VS;
+  const off=((W/2-game.camX*VS)%spacing+spacing)%spacing;
+  ctx.lineWidth=1;
+  for(let x=off-spacing;x<W+spacing;x+=spacing){
+    const grd=ctx.createLinearGradient(0,gy,0,H);
+    grd.addColorStop(0,'rgba(150,100,255,0.16)');
+    grd.addColorStop(1,'rgba(150,100,255,0)');
+    ctx.strokeStyle=grd;
+    ctx.beginPath(); ctx.moveTo(x,gy); ctx.lineTo(x+(x-W/2)*0.55,H); ctx.stroke();
+  }
+}
+
+/* ═══════════════════════════════════════════
+   رسم جنگجو (اصلاح‌شده - شمشیر در دست)
+   ═══════════════════════════════════════════ */
+function drawWarrior(e,palette,isPlayer){
+  const sx=worldToScreenX(e.x)+game.shakeX;
+  const sy=worldToScreenY(e.y)+game.shakeY;
+  const s=VS*(e.scale||1);
+
+  // سایه
+  ctx.save();
+  ctx.globalAlpha=0.42;
+  const shadowW=36*(e.scale||1)*VS;
+  const sg=ctx.createRadialGradient(sx,groundY+game.shakeY,0,sx,groundY+game.shakeY,shadowW);
+  sg.addColorStop(0,'rgba(0,0,0,0.85)');
+  sg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=sg;
+  ctx.beginPath();
+  ctx.ellipse(sx,groundY+game.shakeY+2,shadowW,shadowW*0.32,0,0,TAU);
+  ctx.fill();
+  ctx.restore();
+
+  const pose=e.pose;
+  const F=e.facing;
+  ctx.save();
+  ctx.translate(sx,sy);
+  ctx.scale(F*s,s);
+
+  if(e.dead){
+    ctx.globalAlpha=Math.max(0,1-e.deathT/0.9);
+    ctx.rotate(-e.deathT*1.7*F);
+  }
+
+  // موقعیت‌ها
+  const pelvis={x:pose.hipX,y:pose.hipY};
+  const chest={x:pose.chestX,y:pose.chestY};
+  const head={x:pose.headX,y:pose.headY};
+  const shF={x:pose.shFx,y:pose.shFy};
+  const shB={x:pose.shBx,y:pose.shBy};
+
+  const handF={x:pose.hFx,y:pose.hFy};
+  const handB={x:pose.hBx,y:pose.hBy};
+  const hipF={x:pelvis.x+6,y:pelvis.y+2};
+  const hipB={x:pelvis.x-6,y:pelvis.y+2};
+  const footF={x:pose.fFx,y:pose.fFy};
+  const footB={x:pose.fBx,y:pose.fBy};
+
+  // IK برای اندام
+  const elbF=ik(shF.x,shF.y,handF.x,handF.y,30,29,1);
+  const elbB=ik(shB.x,shB.y,handB.x,handB.y,30,29,-1);
+  const knF=ik(hipF.x,hipF.y,footF.x,footF.y,50,50,-1);
+  const knB=ik(hipB.x,hipB.y,footB.x,footB.y,50,50,-1);
+
+  const flash=e.hitFlash||0;
+  const bodyCol=flash>0.05?'#ffffff':palette.body;
+  const limbCol=flash>0.05?'#ffffff':palette.limb;
+  const accentCol=flash>0.05?'#ffffff':palette.accent;
+
+  // هاله بازیکن
+  if(isPlayer){
+    ctx.save();
+    ctx.shadowColor=palette.glow;
+    ctx.shadowBlur=20;
+    ctx.globalAlpha=0.5;
+    ctx.fillStyle=palette.glow;
+    ctx.beginPath();
+    ctx.ellipse(chest.x,chest.y+15,28,50,0,0,TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  ctx.lineCap='round';
+  ctx.lineJoin='round';
+
+  /* ── پا عقب ── */
+  ctx.strokeStyle=palette.dark; ctx.lineWidth=16;
+  ctx.beginPath(); ctx.moveTo(hipB.x,hipB.y); ctx.lineTo(knB.x,knB.y); ctx.lineTo(footB.tx,footB.ty); ctx.stroke();
+  ctx.strokeStyle=limbCol; ctx.lineWidth=10;
+  ctx.beginPath(); ctx.moveTo(hipB.x,hipB.y); ctx.lineTo(knB.x,knB.y); ctx.lineTo(footB.tx,footB.ty); ctx.stroke();
+  // چکمه
+  ctx.fillStyle=accentCol;
+  ctx.beginPath(); ctx.ellipse(footB.tx+4,footB.ty+1,9,5,0,0,TAU); ctx.fill();
+
+  /* ── بازو عقب ── */
+  ctx.strokeStyle=palette.dark; ctx.lineWidth=14;
+  ctx.beginPath(); ctx.moveTo(shB.x,shB.y); ctx.lineTo(elbB.x,elbB.y); ctx.lineTo(handB.tx,handB.ty); ctx.stroke();
+  ctx.strokeStyle=limbCol; ctx.lineWidth=8;
+  ctx.beginPath(); ctx.moveTo(shB.x,shB.y); ctx.lineTo(elbB.x,elbB.y); ctx.lineTo(handB.tx,handB.ty); ctx.stroke();
+  // دست عقب (مشت)
+  ctx.fillStyle=accentCol;
+  ctx.beginPath(); ctx.arc(handB.tx,handB.ty,7,0,TAU); ctx.fill();
+
+  /* ── پا جلو ── */
+  ctx.strokeStyle=palette.dark; ctx.lineWidth=16;
+  ctx.beginPath(); ctx.moveTo(hipF.x,hipF.y); ctx.lineTo(knF.x,knF.y); ctx.lineTo(footF.tx,footF.ty); ctx.stroke();
+  ctx.strokeStyle=limbCol; ctx.lineWidth=10;
+  ctx.beginPath(); ctx.moveTo(hipF.x,hipF.y); ctx.lineTo(knF.x,knF.y); ctx.lineTo(footF.tx,footF.ty); ctx.stroke();
+  ctx.fillStyle=accentCol;
+  ctx.beginPath(); ctx.ellipse(footF.tx+4,footF.ty+1,9,5,0,0,TAU); ctx.fill();
+
+  /* ── تنه ── */
+  const torsoGrad=ctx.createLinearGradient(chest.x-18,chest.y,pelvis.x+18,pelvis.y);
+  torsoGrad.addColorStop(0,palette.limb);
+  torsoGrad.addColorStop(0.5,bodyCol);
+  torsoGrad.addColorStop(1,palette.dark);
+  ctx.fillStyle=torsoGrad;
+  ctx.beginPath();
+  ctx.moveTo(pelvis.x-13,pelvis.y+2);
+  ctx.lineTo(pelvis.x+13,pelvis.y+2);
+  ctx.lineTo(chest.x+16,chest.y);
+  ctx.lineTo(chest.x-15,chest.y);
+  ctx.closePath(); ctx.fill();
+
+  // سینه‌پوش
+  ctx.fillStyle=accentCol;
+  ctx.globalAlpha=0.85;
+  ctx.beginPath();
+  ctx.moveTo(chest.x-12,chest.y+4);
+  ctx.lineTo(chest.x+13,chest.y+4);
+  ctx.lineTo(chest.x+10,chest.y+18);
+  ctx.lineTo(chest.x-10,chest.y+18);
+  ctx.closePath(); ctx.fill();
+  ctx.globalAlpha=1;
+
+  // کمربند
+  ctx.fillStyle=palette.dark;
+  ctx.fillRect(pelvis.x-13,pelvis.y-2,26,5);
+
+  // شانه‌ها
+  ctx.fillStyle=palette.limb;
+  ctx.beginPath(); ctx.arc(shF.x,shF.y,10,0,TAU); ctx.fill();
+  ctx.beginPath(); ctx.arc(shB.x,shB.y,10,0,TAU); ctx.fill();
+  ctx.fillStyle=accentCol;
+  ctx.beginPath(); ctx.arc(shF.x+1,shF.y+1,5,0,TAU); ctx.fill();
+  ctx.beginPath(); ctx.arc(shB.x+1,shB.y+1,5,0,TAU); ctx.fill();
+
+  /* ── سر ── */
+  ctx.fillStyle=bodyCol;
+  ctx.beginPath(); ctx.arc(head.x,head.y,15,0,TAU); ctx.fill();
+
+  // کلاه‌خود
+  const helmGrad=ctx.createLinearGradient(head.x-12,head.y-12,head.x+12,head.y+8);
+  helmGrad.addColorStop(0,accentCol);
+  helmGrad.addColorStop(0.5,palette.limb);
+  helmGrad.addColorStop(1,palette.dark);
+  ctx.fillStyle=helmGrad;
+  ctx.beginPath();
+  ctx.arc(head.x,head.y-1,15.5,Math.PI*1.02,Math.PI*2.08);
+  ctx.closePath(); ctx.fill();
+
+  // چشم درخشان
+  ctx.save();
+  ctx.shadowColor=isPlayer?'#7ce7ff':'#ff3b3b';
+  ctx.shadowBlur=12;
+  ctx.fillStyle=isPlayer?'#9df3ff':'#ff5c5c';
+  ctx.beginPath();
+  ctx.moveTo(head.x+5,head.y-1);
+  ctx.lineTo(head.x+13,head.y+1);
+  ctx.lineTo(head.x+5,head.y+4);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+
+  /* ── بازوی جلو ── */
+  ctx.strokeStyle=palette.dark; ctx.lineWidth=14;
+  ctx.beginPath(); ctx.moveTo(shF.x,shF.y); ctx.lineTo(elbF.x,elbF.y); ctx.lineTo(handF.tx,handF.ty); ctx.stroke();
+  ctx.strokeStyle=limbCol; ctx.lineWidth=8;
+  ctx.beginPath(); ctx.moveTo(shF.x,shF.y); ctx.lineTo(elbF.x,elbF.y); ctx.lineTo(handF.tx,handF.ty); ctx.stroke();
+
+  /* ═══════════════════════════════════════
+     شمشیر - حالا کاملاً در دست، با چرخش ساعد
+     ═══════════════════════════════════════ */
+  // محاسبه زاویه ساعد (از آرنج به دست)
+  const forearmAngle=Math.atan2(handF.ty-elbF.y,handF.tx-elbF.x);
+  // جهت شمشیر = جهت ساعد + چرخش نسبی
+  const swordAngle=forearmAngle+pose.swRel;
+
+  const wpal=isPlayer?weapon():{bladeLen:78,bladeW:4.5,color:e.cfg.color,color2:e.cfg.color,tip:'#ffe0e0',hilt:'#3a0a18',guard:e.cfg.color,glow:e.cfg.color};
+
+  ctx.save();
+  ctx.translate(handF.tx,handF.ty);
+  ctx.rotate(swordAngle);
+
+  // دستگیره (پشت شمشیر)
+  ctx.fillStyle=wpal.hilt;
+  ctx.fillRect(-16,-4,20,8);
+  // بند دستگیره
+  ctx.fillStyle=wpal.guard;
+  for(let i=0;i<4;i++) ctx.fillRect(-14+i*4,-4,1.5,8);
+
+  // گارد (محافظ دست)
+  ctx.save();
+  ctx.shadowColor=wpal.glow;
+  ctx.shadowBlur=isPlayer?14:5;
+  ctx.fillStyle=wpal.guard;
+  ctx.fillRect(2,-11,6,22);
+  // بال‌های گارد
+  ctx.beginPath();
+  ctx.arc(5,-11,4,Math.PI,0);
+  ctx.arc(5,11,4,0,Math.PI);
+  ctx.fill();
+  ctx.restore();
+
+  // تیغه
+  const bladeGrad=ctx.createLinearGradient(8,0,8+wpal.bladeLen,0);
+  bladeGrad.addColorStop(0,'#ffffff');
+  bladeGrad.addColorStop(0.15,wpal.tip||'#ffffff');
+  bladeGrad.addColorStop(0.5,wpal.color);
+  bladeGrad.addColorStop(0.9,wpal.color2);
+  bladeGrad.addColorStop(1,'#ffffff');
+
+  ctx.save();
+  ctx.shadowColor=wpal.glow;
+  ctx.shadowBlur=isPlayer?18:6;
+  ctx.fillStyle=bladeGrad;
+  ctx.beginPath();
+  ctx.moveTo(8,-wpal.bladeW);
+  ctx.lineTo(8+wpal.bladeLen*0.85,-wpal.bladeW*0.5);
+  ctx.lineTo(8+wpal.bladeLen,0);
+  ctx.lineTo(8+wpal.bladeLen*0.85,wpal.bladeW*0.5);
+  ctx.lineTo(8,wpal.bladeW);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+
+  // خط درخشان تیغه
+  ctx.strokeStyle='rgba(255,255,255,0.9)';
+  ctx.lineWidth=1.2;
+  ctx.beginPath();
+  ctx.moveTo(10,0); ctx.lineTo(8+wpal.bladeLen*0.92,0);
+  ctx.stroke();
+
+  // دُم درخشان روی تیغه (برای سلاح‌های جادویی)
+  if(isPlayer && game.weapon===3){
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    ctx.globalAlpha=0.6+Math.sin(game.t*8)*0.2;
+    ctx.fillStyle=wpal.glow;
+    ctx.beginPath();
+    ctx.ellipse(8+wpal.bladeLen*0.6,0,wpal.bladeLen*0.5,wpal.bladeW*0.9,0,0,TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  ctx.restore();
+
+  /* ── دست روی دستگیره ── */
+  ctx.fillStyle=accentCol;
+  ctx.beginPath(); ctx.arc(handF.tx,handF.ty,7.5,0,TAU); ctx.fill();
+  ctx.fillStyle=palette.dark;
+  ctx.beginPath(); ctx.arc(handF.tx-2,handF.ty-2,2.5,0,TAU); ctx.fill();
+
+  /* ── نوار جان دشمن ── */
+  if(!isPlayer&&!e.dead){
+    const bw=64,bh=5.5,by=-218-(e.scale-1)*30;
+    ctx.save();
+    ctx.scale(1/F,1);
+    ctx.fillStyle='rgba(0,0,0,0.65)';
+    ctx.fillRect(-bw/2-1,by-1,bw+2,bh+2);
+    const hpR=clamp(e.hp/e.maxHp,0,1);
+    const hg=ctx.createLinearGradient(-bw/2,0,bw/2,0);
+    hg.addColorStop(0,'#ff2d55'); hg.addColorStop(1,'#ff8a3d');
+    ctx.fillStyle=hg;
+    ctx.fillRect(-bw/2,by,bw*hpR,bh);
+    ctx.strokeStyle='rgba(255,255,255,0.4)'; ctx.lineWidth=1;
+    ctx.strokeRect(-bw/2,by,bw,bh);
+    ctx.restore();
+  }
+
+  // فلاش ضربه
+  if(flash>0.05){
+    ctx.globalAlpha=flash*0.5;
+    ctx.fillStyle='#ffffff';
+    ctx.beginPath();
+    ctx.ellipse(chest.x,chest.y+25,36,62,0,0,TAU);
+    ctx.fill();
+    ctx.globalAlpha=1;
+  }
+
+  ctx.restore();
+}
+
+/* پالت‌ها */
+function palPlayer(){
+  const w=weapon();
+  return {
+    body:'#1b2340', limb:'#2e3b63', dark:'#0e1226',
+    accent:w.guard, glow:w.glow
+  };
+}
+function palEnemy(e){
+  const c=e.cfg;
+  return {body:c.dark, limb:c.limb, dark:'#000000', accent:c.color, glow:c.color};
+}
+
+/* افکت‌ها */
+function drawSlashes(){
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  for(const s of game.slashes){
+    const t=s.life/s.max;
+    const r=s.size*VS*(0.75+t*0.5);
+    const sx=worldToScreenX(s.x)+game.shakeX;
+    const sy=worldToScreenY(s.y)+game.shakeY;
+    ctx.save();
+    ctx.translate(sx,sy);
+    ctx.scale(s.facing,1);
+    ctx.rotate(s.ang*0.35);
+    ctx.globalAlpha=t*t;
+    ctx.strokeStyle=s.color;
+    ctx.lineWidth=(14*t+3)*VS;
+    ctx.lineCap='round';
+    ctx.shadowColor=s.color;
+    ctx.shadowBlur=28*VS;
+    ctx.beginPath(); ctx.arc(0,0,r,-s.wide,s.wide); ctx.stroke();
+    ctx.globalAlpha=t*t*0.85;
+    ctx.strokeStyle='#ffffff';
+    ctx.lineWidth=(5*t+1)*VS;
+    ctx.shadowBlur=12*VS;
+    ctx.beginPath(); ctx.arc(0,0,r,-s.wide*0.92,s.wide*0.92); ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+function drawParticles(){
+  ctx.save();
+  for(const p of game.particles){
+    if(p.add) continue;
+    const t=p.life/p.max;
+    ctx.globalAlpha=clamp(t*1.4,0,1);
+    const sx=worldToScreenX(p.x)+game.shakeX;
+    const sy=worldToScreenY(p.y)+game.shakeY;
+    ctx.fillStyle=p.c;
+    ctx.beginPath(); ctx.arc(sx,sy,Math.max(0.4,p.r*VS),0,TAU); ctx.fill();
+  }
+  ctx.restore();
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  for(const p of game.particles){
+    if(!p.add) continue;
+    const t=p.life/p.max;
+    const sx=worldToScreenX(p.x)+game.shakeX;
+    const sy=worldToScreenY(p.y)+game.shakeY;
+    const r=Math.max(0.4,p.r*VS*(0.6+t*0.8));
+    const g=ctx.createRadialGradient(sx,sy,0,sx,sy,r*3.4);
+    g.addColorStop(0,p.c); g.addColorStop(0.35,p.c); g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.globalAlpha=t;
+    ctx.fillStyle=g;
+    ctx.beginPath(); ctx.arc(sx,sy,r*3.4,0,TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+function drawTexts(){
+  ctx.save();
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  for(const t of game.texts){
+    const k=t.life/t.max;
+    const sx=worldToScreenX(t.x)+game.shakeX;
+    const sy=worldToScreenY(t.y)+game.shakeY;
+    const scale=1+(1-k)*0.25;
+    ctx.globalAlpha=clamp(k*1.5,0,1);
+    ctx.font='900 '+(t.size*VS*scale)+'px system-ui,-apple-system,sans-serif';
+    ctx.lineWidth=4*VS;
+    ctx.strokeStyle='rgba(0,0,0,0.75)';
+    ctx.strokeText(t.txt,sx,sy);
+    ctx.fillStyle=t.color;
+    ctx.shadowColor=t.color;
+    ctx.shadowBlur=10*VS;
+    ctx.fillText(t.txt,sx,sy);
+  }
+  ctx.restore();
+}
+
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y);
+  ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);
+  ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);
+  ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);
+  ctx.quadraticCurveTo(x,y,x+r,y);
+  ctx.closePath();
+}
+
+/* ═══════════════════════════════════════════
+   UI
+   ═══════════════════════════════════════════ */
+function drawUI(){
+  const p=player;
+  const pad=Math.max(14,Math.min(W,H)*0.03);
+  const barW=Math.min(W*0.44,230);
+  const barH=Math.max(12,H*0.019);
+  const w=weapon();
+
+  // نوار جان
+  const bx=pad,by=pad;
+  ctx.save();
+  ctx.fillStyle='rgba(10,6,20,0.75)';
+  roundRect(bx-3,by-3,barW+6,barH+6,6); ctx.fill();
+  const hpR=clamp(p.hp/p.maxHp,0,1);
+  const hg=ctx.createLinearGradient(bx,0,bx+barW,0);
+  hg.addColorStop(0,'#00e0a0');
+  hg.addColorStop(0.55,'#4fd8ff');
+  hg.addColorStop(1,'#7b6bff');
+  ctx.fillStyle=hg;
+  ctx.save();
+  ctx.shadowColor='#4fd8ff'; ctx.shadowBlur=12;
+  roundRect(bx,by,barW*hpR,barH,4); ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle='rgba(150,200,255,0.45)'; ctx.lineWidth=1.2;
+  roundRect(bx,by,barW,barH,4); ctx.stroke();
+  ctx.font='800 '+(barH*0.82)+'px system-ui,sans-serif';
+  ctx.fillStyle='rgba(230,240,255,0.95)';
+  ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText('❤ '+Math.max(0,Math.ceil(p.hp)),bx+6,by+barH/2+0.5);
+  ctx.restore();
+
+  // موج و امتیاز
+  ctx.save();
+  ctx.textAlign='right'; ctx.textBaseline='top';
+  ctx.font='900 '+(H*0.026)+'px system-ui,sans-serif';
+  ctx.fillStyle='rgba(255,215,102,0.95)';
+  ctx.shadowColor='#ffd166'; ctx.shadowBlur=10;
+  ctx.fillText('موج '+game.wave,W-pad,pad);
+  ctx.shadowBlur=0;
+  ctx.font='800 '+(H*0.020)+'px system-ui,sans-serif';
+  ctx.fillStyle='rgba(200,190,255,0.85)';
+  ctx.fillText('امتیاز: '+game.score,W-pad,pad+H*0.038);
+  // نام سلاح
+  ctx.font='700 '+(H*0.017)+'px system-ui,sans-serif';
+  ctx.fillStyle=w.color;
+  ctx.shadowColor=w.glow; ctx.shadowBlur=8;
+  ctx.fillText('⚔ '+w.name,W-pad,pad+H*0.068);
+  ctx.restore();
+
+  // کمبو
+  if(game.combo>1){
+    const a=clamp(game.comboT/1.6,0,1);
+    const cx=W/2,cy=H*0.20;
+    const pulse=1+Math.sin(game.t*18)*0.05*(game.combo>4?1:0);
+    ctx.save();
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.globalAlpha=0.35+0.65*a;
+    ctx.font='900 '+(H*0.062*pulse)+'px system-ui,sans-serif';
+    ctx.lineWidth=6; ctx.strokeStyle='rgba(0,0,0,0.7)';
+    ctx.strokeText(game.combo+'x',cx,cy);
+    const cg=ctx.createLinearGradient(cx-60,0,cx+60,0);
+    cg.addColorStop(0,'#ff7ad9'); cg.addColorStop(0.5,'#ffd166'); cg.addColorStop(1,'#7ce7ff');
+    ctx.fillStyle=cg;
+    ctx.shadowColor='#ff7ad9'; ctx.shadowBlur=24;
+    ctx.fillText(game.combo+'x',cx,cy);
+    ctx.restore();
+  }
+
+  // دشمنان باقی‌مانده
+  const alive=game.enemies.filter(e=>!e.dead).length+game.spawnQ.length;
+  if(game.waveState!=='idle'&&alive>0){
+    ctx.save();
+    ctx.textAlign='center'; ctx.textBaseline='bottom';
+    ctx.font='800 '+(H*0.019)+'px system-ui,sans-serif';
+    ctx.fillStyle='rgba(255,120,150,0.8)';
+    ctx.fillText('دشمن: '+alive,W/2,H-16);
+    ctx.restore();
+  }
+
+  // جوی‌استیک
+  if(input.active&&game.state==='play'){
+    const r=Math.max(44,Math.min(W,H)*0.09);
+    const jx=input.ox,jy=input.oy;
+    ctx.save();
+    ctx.globalAlpha=0.28;
+    ctx.strokeStyle='#8fd8ff'; ctx.lineWidth=2.5;
+    ctx.beginPath(); ctx.arc(jx,jy,r,0,TAU); ctx.stroke();
+    ctx.globalAlpha=0.5;
+    ctx.fillStyle='#4fd8ff';
+    const kx=jx+clamp(input.dx,-r,r)*0.62;
+    const ky=jy+clamp(input.dy,-r,r)*0.62;
+    ctx.shadowColor='#4fd8ff'; ctx.shadowBlur=20;
+    ctx.beginPath(); ctx.arc(kx,ky,r*0.34,0,TAU); ctx.fill();
+    ctx.restore();
+  }
+}
+
+/* ═══════════════════════════════════════════
+   منوی اصلی - فوق‌العاده گرافیکی
+   ═══════════════════════════════════════════ */
+function drawMenu(){
+  const t=game.t;
+  // پس‌زمینه تیره با گرادیان
+  ctx.save();
+  const g=ctx.createRadialGradient(W/2,H*0.42,0,W/2,H*0.42,Math.max(W,H)*0.85);
+  g.addColorStop(0,'rgba(60,25,120,0.55)');
+  g.addColorStop(0.5,'rgba(20,8,40,0.85)');
+  g.addColorStop(1,'rgba(3,1,8,0.98)');
+  ctx.fillStyle=g;
+  ctx.fillRect(0,0,W,H);
+  ctx.restore();
+
+  // ذرات نور شناور
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  for(let i=0;i<60;i++){
+    const p=(i*137.5+t*20)%W;
+    const py=(i*93.7+t*40)%H;
+    const a=0.15+0.35*Math.sin(t*1.5+i);
+    const r=1.5+Math.sin(t*2+i*0.5)*0.8;
+    const cg=ctx.createRadialGradient(p,py,0,p,py,r*6);
+    cg.addColorStop(0,'rgba(180,140,255,'+a+')');
+    cg.addColorStop(1,'rgba(180,140,255,0)');
+    ctx.fillStyle=cg;
+    ctx.beginPath(); ctx.arc(p,py,r*6,0,TAU); ctx.fill();
+  }
+  ctx.restore();
+
+  // عنوان با افکت ویژه
+  const titleY=H*0.17;
+  const wave=Math.sin(t*1.5)*6;
+
+  // سایه درخشان
+  ctx.save();
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.shadowColor='#7ce7ff';
+  ctx.shadowBlur=50;
+  ctx.font='900 '+(Math.min(W,H)*0.115)+'px system-ui,sans-serif';
+  ctx.fillStyle='rgba(120,220,255,0.15)';
+  ctx.fillText('سایه‌ی شمشیر',W/2,titleY+wave);
+  ctx.restore();
+
+  // لایه اصلی
+  ctx.save();
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font='900 '+(Math.min(W,H)*0.115)+'px system-ui,sans-serif';
+  ctx.lineWidth=Math.min(W,H)*0.018;
+  ctx.strokeStyle='rgba(0,0,0,0.85)';
+  ctx.strokeText('سایه‌ی شمشیر',W/2,titleY+wave);
+
+  const tg=ctx.createLinearGradient(W/2-200,0,W/2+200,0);
+  tg.addColorStop(0,'#7ce7ff');
+  tg.addColorStop(0.35,'#ffffff');
+  tg.addColorStop(0.6,'#ffd166');
+  tg.addColorStop(1,'#ff7ad9');
+  ctx.fillStyle=tg;
+  ctx.shadowColor='#7ce7ff';
+  ctx.shadowBlur=40;
+  ctx.fillText('سایه‌ی شمشیر',W/2,titleY+wave);
+
+  // خط زیر عنوان
+  ctx.globalAlpha=0.7;
+  const ug=ctx.createLinearGradient(W/2-180,0,W/2+180,0);
+  ug.addColorStop(0,'rgba(124,231,255,0)');
+  ug.addColorStop(0.5,'rgba(200,180,255,0.9)');
+  ug.addColorStop(1,'rgba(255,122,217,0)');
+  ctx.strokeStyle=ug;
+  ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(W/2-180,titleY+Math.min(W,H)*0.062);
+  ctx.lineTo(W/2+180,titleY+Math.min(W,H)*0.062);
+  ctx.stroke();
+  ctx.restore();
+
+  // زیرعنوان
+  ctx.save();
+  ctx.textAlign='center';
+  ctx.font='600 '+(Math.min(W,H)*0.028)+'px system-ui,sans-serif';
+  ctx.fillStyle='rgba(200,190,255,0.7)';
+  ctx.fillText('⚔ نبرد شمشیرزن تنها ⚔',W/2,titleY+Math.min(W,H)*0.105);
+  ctx.restore();
+
+  /* ═══ انتخاب سلاح ═══ */
+  const arrowY=H*0.44;
+  const arrowR=Math.min(W,H)*0.055;
+  const sel=WEAPONS[game.weapon];
+
+  // دکمه چپ
+  ctx.save();
+  ctx.globalAlpha=0.85;
+  ctx.strokeStyle=sel.color;
+  ctx.lineWidth=2.5;
+  ctx.shadowColor=sel.glow;
+  ctx.shadowBlur=18;
+  const lx=W*0.15;
+  ctx.beginPath(); ctx.arc(lx,arrowY,arrowR,0,TAU); ctx.stroke();
+  ctx.fillStyle='rgba(20,10,40,0.6)';
+  ctx.beginPath(); ctx.arc(lx,arrowY,arrowR-3,0,TAU); ctx.fill();
+  ctx.fillStyle=sel.color;
+  ctx.font='900 '+(arrowR*1.2)+'px system-ui,sans-serif';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('‹',lx,arrowY-1);
+  ctx.restore();
+
+  // دکمه راست
+  ctx.save();
+  ctx.globalAlpha=0.85;
+  ctx.strokeStyle=sel.color;
+  ctx.lineWidth=2.5;
+  ctx.shadowColor=sel.glow;
+  ctx.shadowBlur=18;
+  const rx=W*0.85;
+  ctx.beginPath(); ctx.arc(rx,arrowY,arrowR,0,TAU); ctx.stroke();
+  ctx.fillStyle='rgba(20,10,40,0.6)';
+  ctx.beginPath(); ctx.arc(rx,arrowY,arrowR-3,0,TAU); ctx.fill();
+  ctx.fillStyle=sel.color;
+  ctx.font='900 '+(arrowR*1.2)+'px system-ui,sans-serif';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('›',rx,arrowY-1);
+  ctx.restore();
+
+  // کارت سلاح مرکزی
+  const cw=Math.min(W*0.5,200), ch=Math.min(W,H)*0.22;
+  const cx=W/2, cy=arrowY;
+
+  // هاله پشت کارت
+  ctx.save();
+  const cgl=ctx.createRadialGradient(cx,cy,0,cx,cy,cw*1.3);
+  cgl.addColorStop(0,sel.glow+'55');
+  cgl.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=cgl;
+  ctx.beginPath(); ctx.arc(cx,cy,cw*1.3,0,TAU); ctx.fill();
+  ctx.restore();
+
+  // کارت
+  ctx.save();
+  const cardGrad=ctx.createLinearGradient(cx-cw/2,cy-ch/2,cx+cw/2,cy+ch/2);
+  cardGrad.addColorStop(0,'rgba(25,15,45,0.9)');
+  cardGrad.addColorStop(1,'rgba(15,8,30,0.95)');
+  ctx.fillStyle=cardGrad;
+  roundRect(cx-cw/2,cy-ch/2,cw,ch,14);
+  ctx.fill();
+  ctx.strokeStyle=sel.color;
+  ctx.lineWidth=2;
+  ctx.shadowColor=sel.glow;
+  ctx.shadowBlur=22;
+  roundRect(cx-cw/2,cy-ch/2,cw,ch,14);
+  ctx.stroke();
+  ctx.restore();
+
+  // رسم شمشیر داخل کارت (نمایش بزرگ)
+  drawWeaponPreview(cx,cy,sel,cw*0.8,ch*0.7);
+
+  // نام سلاح
+  ctx.save();
+  ctx.textAlign='center'; ctx.textBaseline='bottom';
+  ctx.font='900 '+(Math.min(W,H)*0.036)+'px system-ui,sans-serif';
+  ctx.fillStyle=sel.color;
+  ctx.shadowColor=sel.glow;
+  ctx.shadowBlur=15;
+  ctx.fillText(sel.name,cx,cy+ch/2-8);
+  ctx.shadowBlur=0;
+  ctx.font='600 '+(Math.min(W,H)*0.022)+'px system-ui,sans-serif';
+  ctx.fillStyle='rgba(200,190,240,0.75)';
+  ctx.fillText(sel.desc,cx,cy+ch/2+Math.min(W,H)*0.028);
+  ctx.restore();
+
+  // نشانگرهای انتخاب
+  ctx.save();
+  for(let i=0;i<WEAPONS.length;i++){
+    const dx=W/2+(i-(WEAPONS.length-1)/2)*18;
+    const dy=arrowY+ch/2+Math.min(W,H)*0.06;
+    ctx.fillStyle=i===game.weapon?sel.color:'rgba(150,140,200,0.35)';
+    ctx.shadowColor=i===game.weapon?sel.glow:'transparent';
+    ctx.shadowBlur=i===game.weapon?10:0;
+    ctx.beginPath(); ctx.arc(dx,dy,i===game.weapon?4.5:2.5,0,TAU); ctx.fill();
+  }
+  ctx.restore();
+
+  /* ═══ دکمه شروع ═══ */
+  const btnY=H*0.72;
+  const btnW=Math.min(W*0.62,280);
+  const btnH=Math.min(W,H)*0.10;
+  const pulse=1+Math.sin(t*3)*0.03;
+
+  ctx.save();
+  ctx.translate(W/2,btnY);
+  ctx.scale(pulse,pulse);
+
+  // هاله دکمه
+  const bgl=ctx.createRadialGradient(0,0,0,0,0,btnW*0.9);
+  bgl.addColorStop(0,'rgba(120,231,255,0.35)');
+  bgl.addColorStop(1,'rgba(120,231,255,0)');
+  ctx.fillStyle=bgl;
+  ctx.beginPath(); ctx.arc(0,0,btnW*0.9,0,TAU); ctx.fill();
+
+  // بدنه دکمه
+  const bg=ctx.createLinearGradient(-btnW/2,-btnH/2,btnW/2,btnH/2);
+  bg.addColorStop(0,'#7ce7ff');
+  bg.addColorStop(0.5,'#b28dff');
+  bg.addColorStop(1,'#ff7ad9');
+  ctx.fillStyle=bg;
+  ctx.shadowColor='#7ce7ff';
+  ctx.shadowBlur=30;
+  roundRect(-btnW/2,-btnH/2,btnW,btnH,btnH/2);
+  ctx.fill();
+  ctx.shadowBlur=0;
+
+  // درخشش داخلی
+  ctx.globalAlpha=0.4;
+  const ig=ctx.createLinearGradient(0,-btnH/2,0,btnH/2);
+  ig.addColorStop(0,'rgba(255,255,255,0.8)');
+  ig.addColorStop(0.5,'rgba(255,255,255,0)');
+  ctx.fillStyle=ig;
+  roundRect(-btnW/2,-btnH/2,btnW,btnH,btnH/2);
+  ctx.fill();
+  ctx.globalAlpha=1;
+
+  // متن دکمه
+  ctx.font='900 '+(btnH*0.42)+'px system-ui,sans-serif';
+  ctx.fillStyle='#0a0618';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('شروع نبرد',0,2);
+
+  ctx.restore();
+
+  /* ═══ راهنما پایین ═══ */
+  ctx.save();
+  ctx.textAlign='center'; ctx.textBaseline='bottom';
+  ctx.font='600 '+(Math.min(W,H)*0.021)+'px system-ui,sans-serif';
+  ctx.fillStyle='rgba(180,170,230,0.6)';
+  ctx.fillText('◀ حرکت  •  ▶ ضربه  •  ↑ پرش  •  سلاح: فلش‌ها',W/2,H-Math.min(W,H)*0.03);
+
+  if(game.best>0){
+    ctx.font='800 '+(Math.min(W,H)*0.024)+'px system-ui,sans-serif';
+    ctx.fillStyle='rgba(255,215,102,0.7)';
+    ctx.fillText('بهترین امتیاز: '+game.best,W/2,H-Math.min(W,H)*0.065);
+  }
+  ctx.restore();
+}
+
+function drawWeaponPreview(cx,cy,w,cw,ch){
+  ctx.save();
+  ctx.translate(cx,cy+ch*0.02);
+  ctx.scale(1,1);
+  const scale=Math.min(cw/(w.bladeLen+40),ch/(w.bladeW*6))*1.15;
+  ctx.scale(scale,scale);
+  ctx.rotate(-Math.PI/4+Math.sin(game.t*2)*0.05);
+
+  // دستگیره
+  ctx.fillStyle=w.hilt;
+  ctx.fillRect(-20,-5,22,10);
+  ctx.fillStyle=w.guard;
+  for(let i=0;i<5;i++) ctx.fillRect(-18+i*4.4,-5,1.8,10);
+
+  // گارد
+  ctx.save();
+  ctx.shadowColor=w.glow;
+  ctx.shadowBlur=20;
+  ctx.fillStyle=w.guard;
+  ctx.fillRect(1,-13,7,26);
+  ctx.beginPath(); ctx.arc(4.5,-13,5,Math.PI,0); ctx.arc(4.5,13,5,0,Math.PI); ctx.fill();
+  ctx.restore();
+
+  // تیغه
+  const bg=ctx.createLinearGradient(8,0,8+w.bladeLen,0);
+  bg.addColorStop(0,'#ffffff');
+  bg.addColorStop(0.12,w.tip);
+  bg.addColorStop(0.5,w.color);
+  bg.addColorStop(0.9,w.color2);
+  bg.addColorStop(1,'#ffffff');
+  ctx.save();
+  ctx.shadowColor=w.glow;
+  ctx.shadowBlur=25;
+  ctx.fillStyle=bg;
+  ctx.beginPath();
+  ctx.moveTo(8,-w.bladeW);
+  ctx.lineTo(8+w.bladeLen*0.85,-w.bladeW*0.5);
+  ctx.lineTo(8+w.bladeLen,0);
+  ctx.lineTo(8+w.bladeLen*0.85,w.bladeW*0.5);
+  ctx.lineTo(8,w.bladeW);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+
+  // خط مرکزی
+  ctx.strokeStyle='rgba(255,255,255,0.95)';
+  ctx.lineWidth=1.3;
+  ctx.beginPath(); ctx.moveTo(11,0); ctx.lineTo(8+w.bladeLen*0.9,0); ctx.stroke();
+
+  // درخشش
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  ctx.globalAlpha=0.4+Math.sin(game.t*6)*0.15;
+  ctx.fillStyle=w.glow;
+  ctx.beginPath();
+  ctx.ellipse(8+w.bladeLen*0.6,0,w.bladeLen*0.5,w.bladeW*1.5,0,0,TAU);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.restore();
+}
+
+function drawGameOver(){
+  const k=clamp(game.deathT/0.8,0,1);
+  ctx.save();
+  ctx.globalAlpha=k*0.75;
+  ctx.fillStyle='rgba(20,0,10,1)';
+  ctx.fillRect(0,0,W,H);
+  ctx.restore();
+
+  ctx.save();
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.globalAlpha=k;
+  const cy=H*0.34;
+  ctx.font='900 '+(Math.min(W,H)*0.12)+'px system-ui,sans-serif';
+  ctx.lineWidth=Math.min(W,H)*0.018;
+  ctx.strokeStyle='rgba(0,0,0,0.8)';
+  ctx.strokeText('پایان',W/2,cy);
+  const g=ctx.createLinearGradient(W/2-130,0,W/2+130,0);
+  g.addColorStop(0,'#ff2d55');
+  g.addColorStop(0.5,'#ff8a3d');
+  g.addColorStop(1,'#ffd166');
+  ctx.fillStyle=g;
+  ctx.shadowColor='#ff2d55';
+  ctx.shadowBlur=35;
+  ctx.fillText('پایان',W/2,cy);
+  ctx.shadowBlur=0;
+
+  ctx.font='800 '+(Math.min(W,H)*0.05)+'px system-ui,sans-serif';
+  ctx.fillStyle='#ffd166';
+  ctx.fillText('امتیاز نهایی: '+game.score,W/2,H*0.50);
+
+  ctx.font='700 '+(Math.min(W,H)*0.037)+'px system-ui,sans-serif';
+  ctx.fillStyle='rgba(190,180,240,0.9)';
+  ctx.fillText('موج رسیده: '+game.wave,W/2,H*0.57);
+
+  if(game.best>0){
+    ctx.font='700 '+(Math.min(W,H)*0.032)+'px system-ui,sans-serif';
+    ctx.fillStyle='rgba(255,215,102,0.7)';
+    ctx.fillText('رکورد: '+game.best,W/2,H*0.63);
+  }
+
+  if(game.deathT>1.0){
+    ctx.globalAlpha=k*(0.55+0.45*Math.sin(game.t*4));
+    ctx.font='800 '+(Math.min(W,H)*0.043)+'px system-ui,sans-serif';
+    ctx.fillStyle='#7ce7ff';
+    ctx.shadowColor='#7ce7ff'; ctx.shadowBlur=20;
+    ctx.fillText('برای شروع دوباره ضربه بزن',W/2,H*0.72);
+  }
+  ctx.restore();
+}
+
+/* ═══════════════════════════════════════════
+   حلقه اصلی
+   ═══════════════════════════════════════════ */
+let lastT=0;
+function loop(ts){
+  requestAnimationFrame(loop);
+  if(!lastT) lastT=ts;
+  let dt=(ts-lastT)/1000;
+  lastT=ts;
+  dt=Math.min(dt,0.05);
+
+  update(dt);
+
+  ctx.save();
+  ctx.translate(game.shakeX*0.35,game.shakeY*0.35);
+
+  drawBackground();
+  drawGround();
+  drawSlashes();
+
+  for(const e of game.enemies) drawWarrior(e,palEnemy(e),false);
+
+  if(player.alive||game.state!=='over') drawWarrior(player,palPlayer(),true);
+
+  drawParticles();
+  drawTexts();
+
+  ctx.restore();
+
+  // فلاش ضربه
+  if(game.flash>0.01){
+    ctx.save();
+    ctx.globalAlpha=game.flash*0.30;
+    ctx.fillStyle='#ff4d6d';
+    ctx.fillRect(0,0,W,H);
+    ctx.restore();
+  }
+
+  // وینیت
+  const vg=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.35,W/2,H/2,Math.max(W,H)*0.78);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(0,0,0,0.65)');
+  ctx.fillStyle=vg;
+  ctx.fillRect(0,0,W,H);
+
+  if(game.state==='play') drawUI();
+  else if(game.state==='menu') drawMenu();
+  else if(game.state==='over') drawGameOver();
+}
+
+/* ═══════════════════════════════════════════
+   راه‌اندازی
+   ═══════════════════════════════════════════ */
+resize();
+resetPlayer();
+requestAnimationFrame(loop);
+
+document.addEventListener('gesturestart',e=>e.preventDefault());
+document.addEventListener('contextmenu',e=>e.preventDefault());
+document.addEventListener('dblclick',e=>e.preventDefault());
+window.addEventListener('touchmove',e=>{ if(e.touches.length>1) e.preventDefault(); },{passive:false});
+
+})();
+</script>
+</body>
+</html>
